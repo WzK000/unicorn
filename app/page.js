@@ -166,8 +166,6 @@ export default function Home() {
   };
 
   const handleNew = async () => {
-    if (isLoadingTheme) return; // Prevent multiple clicks
-    
     setSelectedEssay(null);
     setEssay("");
     setScore(null);
@@ -328,19 +326,9 @@ export default function Home() {
                 variant="outline"
                 size="sm"
                 className="flex items-center gap-2 mt-4"
-                disabled={isLoadingTheme}
               >
-                {isLoadingTheme ? (
-                  <>
-                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-gray-600" />
-                    Gerando tema...
-                  </>
-                ) : (
-                  <>
-                    <PlusCircle className="h-4 w-4" />
-                    Nova Redação
-                  </>
-                )}
+                <PlusCircle className="h-4 w-4" />
+                Nova Redação
               </Button>
             </div>
 
@@ -505,13 +493,8 @@ export default function Home() {
                     variant="ghost"
                     size="icon"
                     className="rounded-full hover:bg-gray-100"
-                    disabled={isLoadingTheme}
                   >
-                    {isLoadingTheme ? (
-                      <div className="h-5 w-5 animate-spin rounded-full border-2 border-gray-300 border-t-gray-600" />
-                    ) : (
-                      <PlusCircle className="h-5 w-5 text-gray-600" />
-                    )}
+                    <PlusCircle className="h-5 w-5 text-gray-600" />
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent side="right">
@@ -566,20 +549,10 @@ export default function Home() {
                 <Button
                   onClick={handleNew}
                   className="gap-2"
-                  size="lg"
-                  disabled={isLoadingTheme}
+                  size="lg" 
                 >
-                  {isLoadingTheme ? (
-                    <>
-                      <div className="h-5 w-5 animate-spin rounded-full border-2 border-gray-300 border-t-gray-600" />
-                      Gerando tema...
-                    </>
-                  ) : (
-                    <>
-                      <PlusCircle className="h-5 w-5" />
-                      Criar Nova Redação
-                    </>
-                  )}
+                  <PlusCircle className="h-5 w-5" />
+                  Criar Nova Redação
                 </Button>
               </div>
             </div>
