@@ -1,12 +1,11 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 
 export default function SignUp() {
   const [name, setName] = useState('');
@@ -14,8 +13,17 @@ export default function SignUp() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
-  const { signUp } = useAuth();
-  const router = useRouter();
+  const [isClient, setIsClient] = useState(false);
+  const { signUp, user } = useAuth();
+
+  useEffect(() => {
+    setIsClient(true);
+    
+    // Redirect if already logged in
+    if (user) {
+      window.location.href = '/';
+    }
+  }, [user]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -38,11 +46,11 @@ export default function SignUp() {
     
     if (error) {
       setError(error.message);
+      setLoading(false);
     } else {
-      router.push('/login?registered=true');
+      // Direct navigation to avoid hydration issues
+      window.location.href = '/login?registered=true';
     }
-    
-    setLoading(false);
   };
 
   return (
@@ -53,13 +61,13 @@ export default function SignUp() {
           <h2 className="mt-6 text-2xl font-semibold">Criar uma conta</h2>
         </div>
 
-        <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
-          {error && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
+        {isClient && error && (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
 
+        <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
           <div className="space-y-4">
             <div>
               <label htmlFor="name" className="block text-sm font-medium">
@@ -72,6 +80,7 @@ export default function SignUp() {
                 onChange={(e) => setName(e.target.value)}
                 className="mt-1"
                 placeholder="Seu nome completo"
+                disabled={!isClient}
               />
             </div>
 
@@ -86,6 +95,7 @@ export default function SignUp() {
                 onChange={(e) => setEmail(e.target.value)}
                 className="mt-1"
                 placeholder="seu@email.com"
+                disabled={!isClient}
               />
             </div>
 
@@ -100,6 +110,7 @@ export default function SignUp() {
                 onChange={(e) => setPassword(e.target.value)}
                 className="mt-1"
                 placeholder="Mínimo de 6 caracteres"
+                disabled={!isClient}
               />
             </div>
           </div>
@@ -107,7 +118,7 @@ export default function SignUp() {
           <Button
             type="submit"
             className="w-full"
-            disabled={loading}
+            disabled={loading || !isClient}
           >
             {loading ? "Criando conta..." : "Criar conta"}
           </Button>

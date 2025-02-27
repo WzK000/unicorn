@@ -2,21 +2,34 @@
 
 import { createContext, useContext, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { useRouter } from 'next/navigation';
 
 const AuthContext = createContext();
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const router = useRouter();
+  const [isClient, setIsClient] = useState(false);
 
+  // Only run authentication check on client-side
   useEffect(() => {
+    setIsClient(true);
+    let mounted = true;
+    
     // Check active session
     const checkSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      setUser(session?.user || null);
-      setLoading(false);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (mounted) {
+          setUser(session?.user || null);
+          setLoading(false);
+        }
+      } catch (error) {
+        console.error("Error checking session:", error);
+        if (mounted) {
+          setUser(null);
+          setLoading(false);
+        }
+      }
     };
     
     checkSession();
@@ -24,12 +37,17 @@ export function AuthProvider({ children }) {
     // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (_event, session) => {
-        setUser(session?.user || null);
-        setLoading(false);
+        if (mounted) {
+          setUser(session?.user || null);
+          setLoading(false);
+        }
       }
     );
 
-    return () => subscription.unsubscribe();
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
   const signUp = async (email, password, name) => {
@@ -58,19 +76,27 @@ export function AuthProvider({ children }) {
         password,
       });
 
-      if (error) throw error;
-      router.push('/');
-      return { data, error: null };
+      if (error) {
+        return { data: null, error };
+      }
+      
+      if (data?.user) {
+        setUser(data.user);
+        return { data, error: null, success: true };
+      } else {
+        return { data: null, error: { message: 'Falha na autenticação' } };
+      }
     } catch (error) {
+      console.error("Unexpected auth error:", error);
       return { data: null, error };
     }
   };
 
   const signOut = async () => {
     try {
-      const { error } = await supabase.auth.signOut();
-      if (error) throw error;
-      router.push('/login');
+      await supabase.auth.signOut();
+      setUser(null);
+      window.location.href = '/login';
     } catch (error) {
       console.error('Error signing out:', error.message);
     }
@@ -82,6 +108,7 @@ export function AuthProvider({ children }) {
     signUp,
     signIn,
     signOut,
+    isAuthenticated: !!user,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
