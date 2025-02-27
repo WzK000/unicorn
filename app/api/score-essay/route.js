@@ -1,98 +1,77 @@
-import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
-import { competencias } from '@/utils/evaluationCriteria';
+import { NextResponse } from 'next/server';
 
+// Initialize OpenAI with configuration
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
+  dangerouslyAllowBrowser: true // Only if needed for development
 });
 
-async function generatePrompt(competencias, essay, theme) {
-  const criteriaList = competencias
-    .map(comp => `
-Competência ${comp.numero}: ${comp.descricao}
-Critérios de avaliação:
-${comp.criterios
-  .map(criterio => `- ${criterio.pontuacao} pontos: ${criterio.descricao}`)
-  .join('\n')}
-`).join('\n');
-
-  return `
-Você é um avaliador especializado em redações do ENEM. Analise a redação considerando o tema proposto:
-
-TEMA:
-${theme.título}
-
-TEXTO MOTIVADOR:
-${theme.textoMotivador.join('\n\n')}
-
-INSTRUÇÕES:
-${theme.instrucoes}
-
-CRITÉRIOS DE AVALIAÇÃO:
-${criteriaList}
-
-Forneça:
-1. Uma nota para cada competência (conforme os critérios acima)
-2. Feedback detalhado incluindo:
-   - Contagem de palavras
-   - Contagem de parágrafos
-   - Sugestões específicas para melhorar em cada competência
-   - Principais pontos positivos
-   - Principais pontos a melhorar
-   - Aderência ao tema proposto
-
-REDAÇÃO A SER AVALIADA:
-${essay}
-
-Retorne a avaliação no seguinte formato JSON:
-{
-  "score": number (soma total das notas),
-  "feedback": {
-    "wordCount": number,
-    "paragraphCount": number,
-    "competenciaScores": {
-      "comp1": number,
-      "comp2": number,
-      "comp3": number,
-      "comp4": number,
-      "comp5": number
-    },
-    "suggestions": {
-      "comp1": string,
-      "comp2": string,
-      "comp3": string,
-      "comp4": string,
-      "comp5": string
-    },
-    "pontosPositivos": string[],
-    "pontosAMelhorar": string[],
-    "aderenciaAoTema": string
+export async function POST(req) {
+  if (!process.env.OPENAI_API_KEY) {
+    return NextResponse.json(
+      { error: 'OpenAI API key is not configured' },
+      { status: 500 }
+    );
   }
-}`;
-}
 
-export async function POST(request) {
   try {
-    const { essay, theme } = await request.json();
+    const { essay, theme } = await req.json();
 
-    if (!theme) {
+    if (!essay || !theme) {
       return NextResponse.json(
-        { error: 'É necessário gerar um tema antes de avaliar a redação' },
+        { error: 'Redação e tema são obrigatórios' },
         { status: 400 }
       );
     }
 
-    if (!essay || essay.trim().length < 50) {
-      return NextResponse.json(
-        { error: 'A redação deve ter no mínimo 50 caracteres' },
-        { status: 400 }
-      );
-    }
-
-    const prompt = await generatePrompt(competencias, essay, theme);
+    const prompt = `
+      Você é um avaliador especialista do ENEM. Avalie a seguinte redação de acordo com as 5 competências do ENEM.
+      
+      Tema: "${theme.título}"
+      
+      Redação:
+      "${essay}"
+      
+      Avalie detalhadamente cada competência e forneça uma nota de 0 a 200 para cada uma, considerando:
+      
+      Competência 1: Domínio da norma culta da língua escrita
+      Competência 2: Compreensão da proposta e desenvolvimento do tema
+      Competência 3: Capacidade de organizar e relacionar informações e argumentos
+      Competência 4: Mecanismos linguísticos necessários para a construção da argumentação
+      Competência 5: Proposta de intervenção para o problema abordado
+      
+      Forneça também:
+      - Pontos positivos específicos da redação
+      - Pontos a melhorar com sugestões práticas
+      - Análise da aderência ao tema
+      - Contagem de palavras e parágrafos
+      
+      Responda em formato JSON com a seguinte estrutura:
+      {
+        "competenciaScores": {
+          "comp1": number,
+          "comp2": number,
+          "comp3": number,
+          "comp4": number,
+          "comp5": number
+        },
+        "suggestions": {
+          "comp1": "string",
+          "comp2": "string",
+          "comp3": "string",
+          "comp4": "string",
+          "comp5": "string"
+        },
+        "pontosPositivos": ["string"],
+        "pontosAMelhorar": ["string"],
+        "aderenciaAoTema": "string",
+        "wordCount": number,
+        "paragraphCount": number
+      }
+    `;
 
     const completion = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo",
       messages: [
         {
           role: "system",
@@ -100,25 +79,37 @@ export async function POST(request) {
         },
         {
           role: "user",
-          content: prompt + "\n\nRedação para avaliar:\n" + essay
+          content: prompt
         }
       ],
+      model: "gpt-3.5-turbo", // Using 3.5-turbo for better cost-effectiveness
+      response_format: { type: "json_object" },
       temperature: 0.7,
-      response_format: { type: "json_object" }
     });
 
-    const aiResponse = JSON.parse(completion.choices[0].message.content);
+    const result = JSON.parse(completion.choices[0].message.content);
 
-    if (!aiResponse.score || !aiResponse.feedback) {
-      throw new Error('Formato de resposta inválido');
-    }
+    // Validate and normalize scores
+    const normalizedScores = Object.entries(result.competenciaScores).reduce((acc, [comp, score]) => ({
+      ...acc,
+      [comp]: Math.min(Math.max(0, Math.round(score)), 200) // Ensure scores are between 0 and 200
+    }), {});
 
-    return NextResponse.json(aiResponse);
+    // Calculate total score
+    const totalScore = Object.values(normalizedScores).reduce((sum, score) => sum + score, 0);
+
+    return NextResponse.json({
+      score: totalScore,
+      feedback: {
+        ...result,
+        competenciaScores: normalizedScores
+      }
+    });
 
   } catch (error) {
     console.error('Erro ao avaliar redação:', error);
     return NextResponse.json(
-      { error: error.message || 'Falha ao avaliar redação' },
+      { error: 'Falha ao avaliar redação. Por favor, tente novamente.' },
       { status: 500 }
     );
   }

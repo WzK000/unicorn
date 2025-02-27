@@ -1,9 +1,9 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Send, AlertCircle, CheckCircle2, Info, Search, Trash2, PlusCircle, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Calendar, SortAsc, SortDesc, FileText, CheckSquare, Clock, Filter, X, ArrowDownAZ, ArrowUpAZ } from "lucide-react";
+import { Send, AlertCircle, CheckCircle2, Search, Trash2, PlusCircle, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Calendar, SortAsc, SortDesc, FileText, CheckSquare, Clock, Filter, ArrowDownAZ, ArrowUpAZ, PenLine, BookOpen, ScrollText } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   Sheet,
@@ -13,7 +13,6 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
-import { competencias } from '@/utils/evaluationCriteria';
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -43,9 +42,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useAuth } from '@/contexts/AuthContext';
-import { supabase } from '@/lib/supabase';
-import { useRouter } from 'next/navigation';
 
 export default function Home() {
   const [essay, setEssay] = useState("");
@@ -62,41 +58,28 @@ export default function Home() {
   const [showMotivador, setShowMotivador] = useState(true);
   const [sortOption, setSortOption] = useState("date-desc");
   const [filterOption, setFilterOption] = useState("all");
-  const { user, signOut } = useAuth();
-  const router = useRouter();
+  const [isClient, setIsClient] = useState(false);
 
+  // Load essays from localStorage on mount
   useEffect(() => {
-    if (!user) return;
-    
-    // Load essays from Supabase instead of localStorage
-    const loadEssays = async () => {
-      const { data, error } = await supabase
-        .from('essays')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false });
-      
-      if (error) {
-        console.error('Error loading essays:', error);
-        return;
-      }
-      
-      // Transform data to match our app's format
-      const formattedData = data.map(item => ({
-        id: item.id,
-        date: item.created_at,
-        essay: item.content,
-        theme: item.theme,
-        score: item.score,
-        feedback: item.feedback,
-        isDraft: item.is_draft
-      }));
-      
-      setHistory(formattedData);
-    };
-    
-    loadEssays();
-  }, [user]);
+    setIsClient(true);
+    const savedEssays = localStorage.getItem('essays');
+    if (savedEssays) {
+      setHistory(JSON.parse(savedEssays));
+    }
+  }, []);
+
+  // Save essays to localStorage whenever history changes
+  useEffect(() => {
+    if (isClient) {
+      localStorage.setItem('essays', JSON.stringify(history));
+    }
+  }, [history, isClient]);
+
+  const calculateTotalScore = (competenciaScores) => {
+    if (!competenciaScores) return 0;
+    return Object.values(competenciaScores).reduce((sum, score) => sum + score, 0);
+  };
 
   const handleSubmit = async () => {
     setIsLoading(true);
@@ -120,20 +103,22 @@ export default function Home() {
         throw new Error(data.error || 'Falha ao avaliar redação');
       }
 
-      // Update in Supabase
-      const { error: supabaseError } = await supabase
-        .from('essays')
-        .update({
-          content: essay,
-          score: data.score,
-          feedback: data.feedback,
-          is_draft: false,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', selectedEssay)
-        .eq('user_id', user.id);
-
-      if (supabaseError) throw supabaseError;
+      // Ensure the total score matches the sum of competency scores
+      const calculatedScore = calculateTotalScore(data.feedback.competenciaScores);
+      
+      // Update the data with the calculated score
+      const finalData = {
+        ...data,
+        score: calculatedScore,
+        feedback: {
+          ...data.feedback,
+          // Ensure each competency score is between 0 and 200
+          competenciaScores: Object.entries(data.feedback.competenciaScores).reduce((acc, [comp, score]) => ({
+            ...acc,
+            [comp]: Math.min(Math.max(0, score), 200)
+          }), {})
+        }
+      };
 
       // Update local state
       const updatedHistory = history.map(item => {
@@ -141,8 +126,8 @@ export default function Home() {
           return {
             ...item,
             essay: essay,
-            score: data.score,
-            feedback: data.feedback,
+            score: finalData.score,
+            feedback: finalData.feedback,
             isDraft: false
           };
         }
@@ -150,8 +135,8 @@ export default function Home() {
       });
 
       setHistory(updatedHistory);
-      setScore(data.score);
-      setFeedback(data.feedback);
+      setScore(finalData.score);
+      setFeedback(finalData.feedback);
     } catch (error) {
       setError(error.message);
     } finally {
@@ -173,9 +158,16 @@ export default function Home() {
   const handleDelete = (essayId) => {
     const updatedHistory = history.filter((essay) => essay.id !== essayId);
     setHistory(updatedHistory);
+    
+    // Reset current essay if the deleted one was selected
+    if (selectedEssay === essayId) {
+      handleNew();
+    }
   };
 
   const handleNew = async () => {
+    if (isLoadingTheme) return; // Prevent multiple clicks
+    
     setSelectedEssay(null);
     setEssay("");
     setScore(null);
@@ -184,7 +176,7 @@ export default function Home() {
     setTheme(null);
     
     // Automatically generate a new theme
-    await generateTheme(true); // Pass true to indicate it's from "Nova" button
+    await generateTheme(true);
   };
 
   // Sort and filter essays
@@ -219,7 +211,6 @@ export default function Home() {
     });
 
   const generateTheme = async (isFromNewButton = false) => {
-    // Skip the check when coming from New button
     if (!isFromNewButton && theme && !selectedEssay) {
       setError("Clique em 'Nova Redação' antes de gerar um novo tema");
       return;
@@ -230,32 +221,18 @@ export default function Home() {
     
     try {
       const response = await fetch('/api/generate-theme');
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `Erro ${response.status}: Falha ao gerar tema`);
+      }
+      
       const themeData = await response.json();
 
-      if (!response.ok) {
-        throw new Error(themeData.error || 'Falha ao gerar tema');
-      }
-
-      // Create new essay in Supabase
-      const { data: newEssay, error: supabaseError } = await supabase
-        .from('essays')
-        .insert({
-          user_id: user.id,
-          content: "",
-          theme: themeData,
-          is_draft: true,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-        .select()
-        .single();
-
-      if (supabaseError) throw supabaseError;
-
-      // Format for our app
+      // Create new essay in local state
       const newEssayEntry = {
-        id: newEssay.id,
-        date: newEssay.created_at,
+        id: Date.now(), // Use timestamp as ID
+        date: new Date().toISOString(),
         essay: "",
         theme: themeData,
         score: null,
@@ -267,34 +244,26 @@ export default function Home() {
       setHistory(updatedHistory);
 
       // Select the new entry
-      setSelectedEssay(newEssay.id);
+      setSelectedEssay(newEssayEntry.id);
       setTheme(themeData);
       setEssay("");
       setScore(null);
       setFeedback(null);
     } catch (error) {
-      setError(error.message);
+      setError("Erro ao gerar tema: " + error.message);
+      console.error("Theme generation error:", error);
     } finally {
       setIsLoadingTheme(false);
     }
   };
 
-  // Update handleSaveDraft to save to Supabase
-  const handleSaveDraft = async () => {
-    if (!theme || !selectedEssay || !user) return;
+  const handleSaveDraft = () => {
+    if (!theme || !selectedEssay) {
+      setError("Não foi possível salvar: informações necessárias faltando");
+      return;
+    }
     
     try {
-      const { error: supabaseError } = await supabase
-        .from('essays')
-        .update({
-          content: essay,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', selectedEssay)
-        .eq('user_id', user.id);
-
-      if (supabaseError) throw supabaseError;
-
       // Update local state
       const updatedHistory = history.map(item => {
         if (item.id === selectedEssay) {
@@ -315,172 +284,219 @@ export default function Home() {
     }
   };
 
+  const EmptyState = () => (
+    <div className="flex flex-col items-center justify-center h-full py-12 px-4 text-center space-y-6">
+      <div className="relative">
+        {/* <div className="absolute -left-6 -top-6 w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
+          <PenLine className="w-6 h-6 text-blue-600" />
+        </div>
+        <div className="absolute -right-4 -bottom-4 w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
+          <ScrollText className="w-5 h-5 text-green-600" />
+        </div> */}
+        <div className="w-16 h-16 bg-purple-100 rounded-full flex items-center justify-center">
+          <BookOpen className="w-8 h-8 text-purple-600" />
+        </div>
+      </div>
+      <div className="space-y-2">
+        <h3 className="text-lg font-semibold text-gray-900">Suas redações ficarão aqui</h3>
+        <p className="text-sm text-gray-500 max-w-sm">
+          Clique em "Criar Nova Redação" para criar sua primeira redação e receber feedback detalhado
+        </p>
+      </div>
+      {/* <Button
+        onClick={handleNew}
+        className="flex items-center gap-2"
+      >
+        <PlusCircle className="h-4 w-4" />
+        Nova Redação
+      </Button> */}
+    </div>
+  );
+
   return (
-    <div className="flex min-h-screen relative">
+    <div className="flex min-h-screen">
       {/* Collapsible History Sidebar */}
       <div 
-        className={`${sidebarVisible ? 'w-80' : 'w-16'} border-r bg-gray-50 transition-all duration-300 flex flex-col`}
+        className={`${sidebarVisible ? 'w-80 border-r bg-gray-50' : 'w-16'} transition-all duration-300 flex flex-col`}
       >
         {sidebarVisible ? (
-          <div className="p-4 space-y-4">
-            <div className="flex items-center justify-between">
+          <div className="p-4 space-y-4 h-full">
+            <div className="flex flex-col items-left justify-between">
               <h2 className="text-lg font-semibold">Histórico de Redações</h2>
               <Button
                 onClick={handleNew}
                 variant="outline"
                 size="sm"
-                className="flex items-center gap-2"
+                className="flex items-center gap-2 mt-4"
+                disabled={isLoadingTheme}
               >
-                <PlusCircle className="h-4 w-4" />
-                Nova
+                {isLoadingTheme ? (
+                  <>
+                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-gray-600" />
+                    Gerando tema...
+                  </>
+                ) : (
+                  <>
+                    <PlusCircle className="h-4 w-4" />
+                    Nova Redação
+                  </>
+                )}
               </Button>
             </div>
 
-            <div className="space-y-2">
-              <div className="relative">
-                <Search className="absolute left-2 top-2.5 h-4 w-4 text-gray-500" />
-                <Input
-                  placeholder="Buscar redação..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="pl-8"
-                />
-              </div>
-              
-              <div className="flex gap-2">
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="outline" size="sm" className="flex items-center gap-1 flex-1">
-                      <SortAsc className="h-3 w-3" />
-                      Ordenar
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start">
-                    <DropdownMenuLabel>Ordenar por</DropdownMenuLabel>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem onClick={() => setSortOption("date-desc")} className={sortOption === "date-desc" ? "bg-gray-100" : ""}>
-                      <Calendar className="h-4 w-4 mr-2" /> Mais recentes
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setSortOption("date-asc")} className={sortOption === "date-asc" ? "bg-gray-100" : ""}>
-                      <Calendar className="h-4 w-4 mr-2" /> Mais antigas
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setSortOption("score-desc")} className={sortOption === "score-desc" ? "bg-gray-100" : ""}>
-                      <SortDesc className="h-4 w-4 mr-2" /> Maior nota
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setSortOption("score-asc")} className={sortOption === "score-asc" ? "bg-gray-100" : ""}>
-                      <SortAsc className="h-4 w-4 mr-2" /> Menor nota
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setSortOption("title-asc")} className={sortOption === "title-asc" ? "bg-gray-100" : ""}>
-                      <ArrowDownAZ className="h-4 w-4 mr-2" /> Tema A-Z
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setSortOption("title-desc")} className={sortOption === "title-desc" ? "bg-gray-100" : ""}>
-                      <ArrowUpAZ className="h-4 w-4 mr-2" /> Tema Z-A
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="outline" size="sm" className="flex items-center gap-1 flex-1">
-                      <Filter className="h-3 w-3" />
-                      Filtrar
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start">
-                    <DropdownMenuLabel>Filtrar por</DropdownMenuLabel>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem onClick={() => setFilterOption("all")} className={filterOption === "all" ? "bg-gray-100" : ""}>
-                      <FileText className="h-4 w-4 mr-2" /> Todas
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setFilterOption("drafts")} className={filterOption === "drafts" ? "bg-gray-100" : ""}>
-                      <Clock className="h-4 w-4 mr-2" /> Pendente
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setFilterOption("submitted")} className={filterOption === "submitted" ? "bg-gray-100" : ""}>
-                      <CheckSquare className="h-4 w-4 mr-2" /> Avaliadas
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            </div>
-
-            <ScrollArea className="h-[calc(100vh-14rem)]">
-              <div className="space-y-4">
-                {processedHistory.map((savedEssay) => (
-                  <div
-                    key={savedEssay.id}
-                    className={`relative group rounded-lg transition-colors ${
-                      selectedEssay === savedEssay.id
-                        ? 'bg-blue-100'
-                        : 'bg-white'
-                    }`}
-                  >
-                    <button
-                      onClick={() => loadEssay(savedEssay)}
-                      className="w-full text-left p-3"
-                    >
-                      <div className="flex justify-between items-center mb-2">
-                        <span className="text-sm text-gray-500">
-                          {format(new Date(savedEssay.date), "d 'de' MMMM', às 'HH:mm", {
-                            locale: ptBR,
-                          })}
-                        </span>
-                        {savedEssay.isDraft ? (
-                          <span className="text-xs px-2 py-1 bg-yellow-100 text-yellow-800 rounded-full">Pendente</span>
-                        ) : (
-                          <span className="font-semibold">{savedEssay.score}/1000</span>
-                        )}
-                      </div>
-                      <div className="space-y-1">
-                        {savedEssay.theme && (
-                          <p className="text-xs font-medium text-blue-600 break-words">
-                            {savedEssay.theme.título}
-                          </p>
-                        )}
-                        <p className="text-sm text-gray-600 break-words">
-                          {savedEssay.essay 
-                            ? (savedEssay.essay.length > 120 
-                              ? savedEssay.essay.substring(0, 120) + "..." 
-                              : savedEssay.essay)
-                            : "Redação em branco"}
-                        </p>
-                      </div>
-                    </button>
-
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <button
-                          className="absolute right-2 bottom-2 p-1 rounded-md opacity-0 group-hover:opacity-100 hover:bg-red-100 transition-opacity z-10"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <Trash2 className="h-4 w-4 text-red-500" />
-                        </button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Excluir Redação</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            Tem certeza que deseja excluir esta redação? Esta ação não pode ser desfeita.
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                          <AlertDialogAction
-                            onClick={() => handleDelete(savedEssay.id)}
-                            className="bg-red-500 hover:bg-red-600"
-                          >
-                            Excluir
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
+            {history.length === 0 ? (
+              <EmptyState />
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <div className="relative">
+                    <Search className="absolute left-2 top-2.5 h-4 w-4 text-gray-500" />
+                    <Input
+                      placeholder="Buscar redação..."
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      className="pl-8"
+                    />
                   </div>
-                ))}
-              </div>
-            </ScrollArea>
+                  
+                  <div className="flex gap-2">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" size="sm" className="flex items-center gap-1 flex-1">
+                          <SortAsc className="h-3 w-3" />
+                          Ordenar
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start">
+                        <DropdownMenuLabel>Ordenar por</DropdownMenuLabel>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={() => setSortOption("date-desc")} className={sortOption === "date-desc" ? "bg-gray-100" : ""}>
+                          <Calendar className="h-4 w-4 mr-2" /> Mais recentes
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => setSortOption("date-asc")} className={sortOption === "date-asc" ? "bg-gray-100" : ""}>
+                          <Calendar className="h-4 w-4 mr-2" /> Mais antigas
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => setSortOption("score-desc")} className={sortOption === "score-desc" ? "bg-gray-100" : ""}>
+                          <SortDesc className="h-4 w-4 mr-2" /> Maior nota
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => setSortOption("score-asc")} className={sortOption === "score-asc" ? "bg-gray-100" : ""}>
+                          <SortAsc className="h-4 w-4 mr-2" /> Menor nota
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => setSortOption("title-asc")} className={sortOption === "title-asc" ? "bg-gray-100" : ""}>
+                          <ArrowDownAZ className="h-4 w-4 mr-2" /> Tema A-Z
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => setSortOption("title-desc")} className={sortOption === "title-desc" ? "bg-gray-100" : ""}>
+                          <ArrowUpAZ className="h-4 w-4 mr-2" /> Tema Z-A
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" size="sm" className="flex items-center gap-1 flex-1">
+                          <Filter className="h-3 w-3" />
+                          Filtrar
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start">
+                        <DropdownMenuLabel>Filtrar por</DropdownMenuLabel>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={() => setFilterOption("all")} className={filterOption === "all" ? "bg-gray-100" : ""}>
+                          <FileText className="h-4 w-4 mr-2" /> Todas
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => setFilterOption("drafts")} className={filterOption === "drafts" ? "bg-gray-100" : ""}>
+                          <Clock className="h-4 w-4 mr-2" /> Pendente
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => setFilterOption("submitted")} className={filterOption === "submitted" ? "bg-gray-100" : ""}>
+                          <CheckSquare className="h-4 w-4 mr-2" /> Avaliadas
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                </div>
+
+                <ScrollArea className="h-[calc(100vh-14rem)]">
+                  <div className="space-y-4">
+                    {processedHistory.map((savedEssay) => (
+                      <div
+                        key={savedEssay.id}
+                        className={`relative group rounded-lg transition-colors ${
+                          selectedEssay === savedEssay.id
+                            ? 'bg-blue-100'
+                            : 'bg-white'
+                        }`}
+                      >
+                        <button
+                          onClick={() => loadEssay(savedEssay)}
+                          className="w-full text-left p-3"
+                        >
+                          <div className="flex justify-between items-center mb-2">
+                            {isClient && (
+                              <span className="text-sm text-gray-500">
+                                {format(new Date(savedEssay.date), "d 'de' MMMM', às 'HH:mm", {
+                                  locale: ptBR,
+                                })}
+                              </span>
+                            )}
+                            {savedEssay.isDraft ? (
+                              <span className="text-xs px-2 py-1 bg-yellow-100 text-yellow-800 rounded-full">Pendente</span>
+                            ) : (
+                              <span className="font-semibold">{savedEssay.score}/1000</span>
+                            )}
+                          </div>
+                          <div className="space-y-1">
+                            {savedEssay.theme && (
+                              <p className="text-xs font-medium text-blue-600 break-words">
+                                {savedEssay.theme.título}
+                              </p>
+                            )}
+                            <p className="text-sm text-gray-600 break-words">
+                              {savedEssay.essay 
+                                ? (savedEssay.essay.length > 120 
+                                  ? savedEssay.essay.substring(0, 120) + "..." 
+                                  : savedEssay.essay)
+                                : "Redação em branco"}
+                            </p>
+                          </div>
+                        </button>
+
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <button
+                              className="absolute right-2 bottom-2 p-1 rounded-md opacity-0 group-hover:opacity-100 hover:bg-red-100 transition-opacity z-10"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <Trash2 className="h-4 w-4 text-red-500" />
+                            </button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Excluir Redação</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                Tem certeza que deseja excluir esta redação? Esta ação não pode ser desfeita.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                              <AlertDialogAction
+                                onClick={() => handleDelete(savedEssay.id)}
+                                className="bg-red-500 hover:bg-red-600"
+                              >
+                                Excluir
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              </>
+            )}
           </div>
         ) : (
-          // Collapsed view with icons
-          <div className="py-4 flex flex-col items-center h-full">
+          // Collapsed view with only New button
+          <div className="py-4 flex flex-col items-center">
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -488,9 +504,14 @@ export default function Home() {
                     onClick={handleNew}
                     variant="ghost"
                     size="icon"
-                    className="rounded-full"
+                    className="rounded-full hover:bg-gray-100"
+                    disabled={isLoadingTheme}
                   >
-                    <PlusCircle className="h-5 w-5" />
+                    {isLoadingTheme ? (
+                      <div className="h-5 w-5 animate-spin rounded-full border-2 border-gray-300 border-t-gray-600" />
+                    ) : (
+                      <PlusCircle className="h-5 w-5 text-gray-600" />
+                    )}
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent side="right">
@@ -498,300 +519,284 @@ export default function Home() {
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
-
-            <div className="w-10 h-[1px] bg-gray-200 my-4"></div>
-            
-            <ScrollArea className="flex-1 flex flex-col items-center gap-2 w-full">
-              {processedHistory.map((savedEssay) => (
-                <TooltipProvider key={savedEssay.id}>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        onClick={() => loadEssay(savedEssay)}
-                        className={`p-2 rounded-full ${
-                          selectedEssay === savedEssay.id
-                            ? 'bg-blue-100'
-                            : 'hover:bg-gray-200'
-                        }`}
-                      >
-                        {savedEssay.isDraft ? (
-                          <Clock className="h-5 w-5 text-yellow-600" />
-                        ) : (
-                          <CheckSquare className="h-5 w-5 text-green-600" />
-                        )}
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="right" className="w-80 p-3 max-h-[300px] overflow-y-auto">
-                      <div className="space-y-2">
-                        <div className="flex justify-between items-center">
-                          <p className="text-sm font-medium">
-                            {format(new Date(savedEssay.date), "d 'de' MMMM', às 'HH:mm", {
-                              locale: ptBR,
-                            })}
-                          </p>
-                          {!savedEssay.isDraft && (
-                            <span className="font-semibold">{savedEssay.score}/1000</span>
-                          )}
-                        </div>
-                        <p className="text-sm font-medium text-blue-600 break-words">
-                          {savedEssay.theme?.título}
-                        </p>
-                        <p className="text-sm text-gray-600 break-words">
-                          {savedEssay.essay 
-                            ? (savedEssay.essay.length > 300 
-                              ? savedEssay.essay.substring(0, 300) + "..." 
-                              : savedEssay.essay)
-                            : "Redação em branco"}
-                        </p>
-                      </div>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              ))}
-            </ScrollArea>
           </div>
         )}
       </div>
 
-      {/* Toggle Sidebar Button */}
+      {/* Update Toggle Sidebar Button to be more subtle */}
       <button
         onClick={() => setSidebarVisible(!sidebarVisible)}
-        className="fixed left-0 top-1/2 transform -translate-y-1/2 bg-gray-100 rounded-r-md p-1 z-10 hover:bg-gray-200 transition-colors shadow-md"
+        className="fixed left-0 top-1/2 transform -translate-y-1/2 p-1 z-10 hover:bg-gray-100 transition-colors"
       >
-        {sidebarVisible ? <ChevronLeft className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
+        {sidebarVisible ? (
+          <ChevronLeft className="h-5 w-5 text-gray-400" />
+        ) : (
+          <ChevronRight className="h-5 w-5 text-gray-400" />
+        )}
       </button>
 
       {/* Main Content */}
-      <div className="flex-1 p-8 overflow-y-auto">
+      <div className="flex-1 p-8 overflow-y-auto w-dvw">
         <div className="max-w-3xl mx-auto space-y-6">
           <div className="flex items-center justify-between">
             <h1 className="text-3xl font-bold text-center mt-24">10X Redação</h1>
-            
-            {/* User profile dropdown */}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" className="rounded-full h-10 w-10">
-                  {user?.user_metadata?.name?.charAt(0) || user?.email?.charAt(0) || "U"}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuLabel>
-                  {user?.user_metadata?.name || user?.email}
-                </DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={signOut}>
-                  Sair
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
           </div>
           
-          {/* Theme Section with collapsible text motivador */}
-          <div className="space-y-4 pt-8">
-            <div className="flex flex-col">
-              <h2 className="text-md font-semibold text-zinc-600">Tema da Redação</h2>
-              {theme ? (
-                <h3 className="text-xl font-semibold">{theme.título}</h3>
-              ) : (
-                <h3 className="text-xl font-semibold text-gray-500">Tema não disponível</h3>
-              )}
-            </div>
-
-            {theme ? (
-              <div className="bg-white rounded-lg border p-6 space-y-4">
-                <button 
-                  onClick={() => setShowMotivador(!showMotivador)}
-                  className="flex justify-between items-center text-sm text-gray-500 w-full"
-                >
-                  <span className='font-medium'>Textos motivadores</span>
-                  <span>
-                    {showMotivador ? (
-                      <ChevronUp className="h-4 w-4" />
-                    ) : (
-                      <ChevronDown className="h-4 w-4" />
-                    )}
-                  </span>
-                </button>
-                
-                {showMotivador && (
-                  <div className="space-y-4 animate-in fade-in-50 duration-300">
-                    {theme.textoMotivador.map((texto, index) => (
-                      <div key={index} className="text-sm text-gray-600 bg-gray-50 p-4 rounded">
-                        {texto}
-                      </div>
-                    ))}
-                    <div className="bg-blue-50 p-4 rounded">
-                      <p className="text-sm text-blue-700">
-                        A partir da leitura dos textos motivadores e com base nos conhecimentos construídos ao longo de sua formação, redija um texto dissertativo-argumentativo em modalidade escrita formal da língua portuguesa sobre o tema "{theme.título}". Apresente proposta de intervenção que respeite os direitos humanos. Selecione, organize e relacione, de forma coerente e coesa, argumentos e fatos para defesa de seu ponto de vista.
-                      </p>
-                    </div>
-                  </div>
-                )}
+          {!theme ? (
+            <div className="flex flex-col items-center grow-0 justify-center min-h-[60vh] space-y-6">
+              <div className="relative">
+                <div className="absolute -left-8 -top-8 w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center">
+                  <PenLine className="w-8 h-8 text-blue-600" />
+                </div>
+                <div className="absolute -right-6 -bottom-6 w-14 h-14 bg-green-100 rounded-full flex items-center justify-center">
+                  <ScrollText className="w-7 h-7 text-green-600" />
+                </div>
+                <div className="w-24 h-24 bg-purple-100 rounded-full flex items-center justify-center">
+                  <BookOpen className="w-12 h-12 text-purple-600" />
+                </div>
               </div>
-            ) : (
-              <div className="bg-gray-50 rounded-lg border border-dashed p-8 text-center text-gray-500">
-                Clique em "Nova" no painel lateral para começar uma redação
-              </div>
-            )}
-          </div>
-
-          {/* Essay Section */}
-          
-          
-          <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-md font-semibold text-zinc-600 text-center mt-4">Insira sua redação</h3>
-          </div>
-            <Textarea
-              placeholder={theme ? "Escreva sua redação aqui..." : "Gere um tema primeiro para começar"}
-              className="min-h-[300px] p-4"
-              value={essay}
-              onChange={(e) => setEssay(e.target.value)}
-              disabled={!theme}
-            />
-            
-            <div className="flex justify-between items-center">
-              <div className="space-y-1">
-                <p className="text-sm text-gray-500">
-                  {essay.length} caracteres
+              <div className="flex flex-col items-center text-center space-y-3">
+                <h2 className="text-2xl font-semibold text-gray-900">
+                  Bem-vindo ao 10X Redação
+                </h2>
+                <p className="text-gray-500 max-w-md">
+                  Comece sua jornada criando uma nova redação. 
+                  Você receberá feedback detalhado e poderá acompanhar seu progresso.
                 </p>
-                {!isValidLength && essay.length > 0 && (
-                  <p className="text-sm text-red-500">
-                    Mínimo de {minLength} caracteres necessários
-                  </p>
-                )}
-              </div>
-              <div className="flex gap-2">
                 <Button
-                  onClick={handleSaveDraft}
-                  variant="outline"
-                  disabled={!theme || essay.trim().length === 0}
+                  onClick={handleNew}
+                  className="gap-2"
+                  size="lg"
+                  disabled={isLoadingTheme}
                 >
-                  Salvar Rascunho
-                </Button>
-                <Button
-                  onClick={handleSubmit}
-                  disabled={isLoading || !isValidLength}
-                >
-                  {isLoading ? (
-                    "Avaliando..."
+                  {isLoadingTheme ? (
+                    <>
+                      <div className="h-5 w-5 animate-spin rounded-full border-2 border-gray-300 border-t-gray-600" />
+                      Gerando tema...
+                    </>
                   ) : (
                     <>
-                      Avaliar <Send className="ml-2 h-4 w-4" />
+                      <PlusCircle className="h-5 w-5" />
+                      Criar Nova Redação
                     </>
                   )}
                 </Button>
               </div>
             </div>
+          ) : (
+            <>
+              {/* Theme Section with collapsible text motivador */}
+              <div className="space-y-4 pt-8">
+                <div className="flex flex-col">
+                  <h2 className="text-md font-semibold text-zinc-600">Tema da Redação</h2>
+                  <h3 className="text-xl font-semibold">{theme.título}</h3>
+                </div>
 
-            {error && (
-              <Alert variant={error.includes("sucesso") ? "default" : "destructive"}>
-                {error.includes("sucesso") ? (
-                  <CheckCircle2 className="h-4 w-4 text-green-500" />
-                ) : (
-                  <AlertCircle className="h-4 w-4" />
-                )}
-                <AlertTitle>{error.includes("sucesso") ? "Sucesso" : "Erro"}</AlertTitle>
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
-
-            {score !== null && (
-              <div className="space-y-4">
-                <div className="p-6 bg-gray-100 rounded-lg">
-                  <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-xl font-semibold">Nota Final</h2>
-                    <Button 
-                      variant="outline" 
-                      size="sm"
-                      onClick={() => {
-                        // Allow editing the essay again
-                        const updatedHistory = history.map(item => {
-                          if (item.id === selectedEssay) {
-                            return {
-                              ...item,
-                              isDraft: true // Mark as draft again
-                            };
-                          }
-                          return item;
-                        });
-                        setHistory(updatedHistory);
-                      }}
-                    >
-                      Editar Redação
-                    </Button>
-                  </div>
-                  <p className="text-4xl font-bold text-center mt-2">{score}/1000</p>
+                <div className="bg-white rounded-lg border p-6 space-y-4">
+                  <button 
+                    onClick={() => setShowMotivador(!showMotivador)}
+                    className="flex justify-between items-center text-sm text-gray-500 w-full"
+                  >
+                    <span className='font-medium'>Textos motivadores</span>
+                    <span>
+                      {showMotivador ? (
+                        <ChevronUp className="h-4 w-4" />
+                      ) : (
+                        <ChevronDown className="h-4 w-4" />
+                      )}
+                    </span>
+                  </button>
                   
-                  {feedback?.competenciaScores && (
-                    <div className="mt-6 space-y-4">
-                      <h3 className="text-lg font-semibold">Notas por Competência</h3>
-                      {Object.entries(feedback.competenciaScores).map(([comp, score]) => (
-                        <div key={comp} className="bg-white rounded-lg p-4 space-y-2">
-                          <div className="flex justify-between items-center">
-                            <span className="font-medium">Competência {comp.slice(-1)}</span>
-                            <span className="font-semibold">{score}/200</span>
-                          </div>
-                          {feedback.suggestions[comp] && (
-                            <p className="text-sm text-gray-600">
-                              {feedback.suggestions[comp]}
-                            </p>
-                          )}
+                  {showMotivador && (
+                    <div className="space-y-4 animate-in fade-in-50 duration-300">
+                      {theme.textoMotivador.map((texto, index) => (
+                        <div key={index} className="text-sm text-gray-600 bg-gray-50 p-4 rounded">
+                          {texto}
                         </div>
                       ))}
+                      <div className="bg-blue-50 p-4 rounded">
+                        <p className="text-sm text-blue-700">
+                          A partir da leitura dos textos motivadores e com base nos conhecimentos construídos ao longo de sua formação, redija um texto dissertativo-argumentativo em modalidade escrita formal da língua portuguesa sobre o tema "{theme.título}". Apresente proposta de intervenção que respeite os direitos humanos. Selecione, organize e relacione, de forma coerente e coesa, argumentos e fatos para defesa de seu ponto de vista.
+                        </p>
+                      </div>
                     </div>
                   )}
                 </div>
+              </div>
 
-                {feedback && (
-                  <>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="p-4 bg-gray-50 rounded-lg">
-                        <p className="text-sm text-gray-600">Total de Palavras</p>
-                        <p className="text-xl font-semibold">{feedback.wordCount}</p>
+              {/* Essay Section */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-md font-semibold text-zinc-600 text-center mt-4">Insira sua redação</h3>
+                </div>
+                <Textarea
+                  placeholder={theme ? "Escreva sua redação aqui..." : "Gere um tema primeiro para começar"}
+                  className="min-h-[300px] p-4"
+                  value={essay}
+                  onChange={(e) => setEssay(e.target.value)}
+                  disabled={!theme}
+                />
+                
+                <div className="flex justify-between items-center">
+                  <div className="space-y-1">
+                    <p className="text-sm text-gray-500">
+                      {essay.length} caracteres
+                    </p>
+                    {!isValidLength && essay.length > 0 && (
+                      <p className="text-sm text-red-500">
+                        Mínimo de {minLength} caracteres necessários
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={handleSaveDraft}
+                      variant="outline"
+                      disabled={!theme || essay.trim().length === 0}
+                    >
+                      Salvar Rascunho
+                    </Button>
+                    <Button
+                      onClick={handleSubmit}
+                      disabled={isLoading || !isValidLength}
+                    >
+                      {isLoading ? (
+                        "Avaliando..."
+                      ) : (
+                        <>
+                          Avaliar <Send className="ml-2 h-4 w-4" />
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                </div>
+
+                {error && (
+                  <Alert variant={error.includes("sucesso") ? "default" : "destructive"}>
+                    {error.includes("sucesso") ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <AlertCircle className="h-4 w-4" />
+                    )}
+                    <AlertTitle>{error.includes("sucesso") ? "Sucesso" : "Erro"}</AlertTitle>
+                    <AlertDescription>{error}</AlertDescription>
+                  </Alert>
+                )}
+
+                {score !== null && (
+                  <div className="space-y-4">
+                    <div className="p-6 bg-gray-100 rounded-lg">
+                      <div className="flex justify-between items-center mb-4">
+                        <h2 className="text-xl font-semibold">Nota Final</h2>
+                        <Button 
+                          variant="outline" 
+                          size="sm"
+                          onClick={() => {
+                            const updatedHistory = history.map(item => {
+                              if (item.id === selectedEssay) {
+                                return {
+                                  ...item,
+                                  isDraft: true
+                                };
+                              }
+                              return item;
+                            });
+                            setHistory(updatedHistory);
+                          }}
+                        >
+                          Editar Redação
+                        </Button>
                       </div>
-                      <div className="p-4 bg-gray-50 rounded-lg">
-                        <p className="text-sm text-gray-600">Parágrafos</p>
-                        <p className="text-xl font-semibold">{feedback.paragraphCount}</p>
-                      </div>
+                      <p className="text-4xl font-bold text-center mt-2">{score}/1000</p>
+                      
+                      {feedback?.competenciaScores && (
+                        <div className="mt-6 space-y-4">
+                          <div className="flex items-center justify-between">
+                            <h3 className="text-lg font-semibold">Notas por Competência</h3>
+                            <span className="text-sm text-gray-500">
+                              Total: {calculateTotalScore(feedback.competenciaScores)}/1000
+                            </span>
+                          </div>
+                          {Object.entries(feedback.competenciaScores).map(([comp, score]) => (
+                            <div key={comp} className="bg-white rounded-lg p-4 space-y-2">
+                              <div className="flex justify-between items-center">
+                                <span className="font-medium">Competência {comp.slice(-1)}</span>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-semibold">{score}/200</span>
+                                  {score > 200 && (
+                                    <Tooltip>
+                                      <TooltipTrigger>
+                                        <AlertCircle className="h-4 w-4 text-yellow-500" />
+                                      </TooltipTrigger>
+                                      <TooltipContent>
+                                        <p>Nota ajustada para máximo de 200 pontos</p>
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  )}
+                                </div>
+                              </div>
+                              {feedback.suggestions[comp] && (
+                                <p className="text-sm text-gray-600">
+                                  {feedback.suggestions[comp]}
+                                </p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
 
-                    {/* Theme adherence feedback */}
-                    {feedback.aderenciaAoTema && (
-                      <div className="p-4 bg-blue-50 rounded-lg">
-                        <h3 className="font-semibold text-blue-800">Aderência ao Tema</h3>
-                        <p className="mt-1 text-blue-700">
-                          {feedback.aderenciaAoTema}
-                        </p>
-                      </div>
-                    )}
+                    {feedback && (
+                      <>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="p-4 bg-gray-50 rounded-lg">
+                            <p className="text-sm text-gray-600">Total de Palavras</p>
+                            <p className="text-xl font-semibold">{feedback.wordCount}</p>
+                          </div>
+                          <div className="p-4 bg-gray-50 rounded-lg">
+                            <p className="text-sm text-gray-600">Parágrafos</p>
+                            <p className="text-xl font-semibold">{feedback.paragraphCount}</p>
+                          </div>
+                        </div>
 
-                    {feedback.pontosPositivos && (
-                      <div className="p-4 bg-green-50 rounded-lg">
-                        <h3 className="font-semibold text-green-800">Pontos Positivos</h3>
-                        <ul className="mt-2 space-y-1 list-disc list-inside text-green-700">
-                          {feedback.pontosPositivos.map((ponto, index) => (
-                            <li key={index}>{ponto}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
+                        {/* Theme adherence feedback */}
+                        {feedback.aderenciaAoTema && (
+                          <div className="p-4 bg-blue-50 rounded-lg">
+                            <h3 className="font-semibold text-blue-800">Aderência ao Tema</h3>
+                            <p className="mt-1 text-blue-700">
+                              {feedback.aderenciaAoTema}
+                            </p>
+                          </div>
+                        )}
 
-                    {feedback.pontosAMelhorar && (
-                      <div className="p-4 bg-orange-50 rounded-lg">
-                        <h3 className="font-semibold text-orange-800">Pontos a Melhorar</h3>
-                        <ul className="mt-2 space-y-1 list-disc list-inside text-orange-700">
-                          {feedback.pontosAMelhorar.map((ponto, index) => (
-                            <li key={index}>{ponto}</li>
-                          ))}
-                        </ul>
-                      </div>
+                        {feedback.pontosPositivos && (
+                          <div className="p-4 bg-green-50 rounded-lg">
+                            <h3 className="font-semibold text-green-800">Pontos Positivos</h3>
+                            <ul className="mt-2 space-y-1 list-disc list-inside text-green-700">
+                              {feedback.pontosPositivos.map((ponto, index) => (
+                                <li key={index}>{ponto}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        {feedback.pontosAMelhorar && (
+                          <div className="p-4 bg-orange-50 rounded-lg">
+                            <h3 className="font-semibold text-orange-800">Pontos a Melhorar</h3>
+                            <ul className="mt-2 space-y-1 list-disc list-inside text-orange-700">
+                              {feedback.pontosAMelhorar.map((ponto, index) => (
+                                <li key={index}>{ponto}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </>
                     )}
-                  </>
+                  </div>
                 )}
               </div>
-            )}
-          </div>
+            </>
+          )}
         </div>
       </div>
     </div>
