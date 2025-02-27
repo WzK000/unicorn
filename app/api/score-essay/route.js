@@ -6,7 +6,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-async function generatePrompt(competencias) {
+async function generatePrompt(competencias, essay, theme) {
   const criteriaList = competencias
     .map(comp => `
 Competência ${comp.numero}: ${comp.descricao}
@@ -17,8 +17,18 @@ ${comp.criterios
 `).join('\n');
 
   return `
-Você é um avaliador especializado em redações do ENEM. Analise a redação seguindo estas competências:
+Você é um avaliador especializado em redações do ENEM. Analise a redação considerando o tema proposto:
 
+TEMA:
+${theme.título}
+
+TEXTO MOTIVADOR:
+${theme.textoMotivador.join('\n\n')}
+
+INSTRUÇÕES:
+${theme.instrucoes}
+
+CRITÉRIOS DE AVALIAÇÃO:
 ${criteriaList}
 
 Forneça:
@@ -29,6 +39,10 @@ Forneça:
    - Sugestões específicas para melhorar em cada competência
    - Principais pontos positivos
    - Principais pontos a melhorar
+   - Aderência ao tema proposto
+
+REDAÇÃO A SER AVALIADA:
+${essay}
 
 Retorne a avaliação no seguinte formato JSON:
 {
@@ -51,14 +65,22 @@ Retorne a avaliação no seguinte formato JSON:
       "comp5": string
     },
     "pontosPositivos": string[],
-    "pontosAMelhorar": string[]
+    "pontosAMelhorar": string[],
+    "aderenciaAoTema": string
   }
 }`;
 }
 
 export async function POST(request) {
   try {
-    const { essay } = await request.json();
+    const { essay, theme } = await request.json();
+
+    if (!theme) {
+      return NextResponse.json(
+        { error: 'É necessário gerar um tema antes de avaliar a redação' },
+        { status: 400 }
+      );
+    }
 
     if (!essay || essay.trim().length < 50) {
       return NextResponse.json(
@@ -67,7 +89,7 @@ export async function POST(request) {
       );
     }
 
-    const prompt = await generatePrompt(competencias);
+    const prompt = await generatePrompt(competencias, essay, theme);
 
     const completion = await openai.chat.completions.create({
       model: "gpt-3.5-turbo",
